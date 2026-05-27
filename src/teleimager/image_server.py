@@ -589,6 +589,35 @@ def reload_uvc_driver():
         # Camera discovery will proceed with the driver in its current state.
         logger_mp.warning(f"UVC driver reload skipped (module may be in use): {e}")
 
+
+def reset_usb_device(uid: str) -> None:
+    """Issue a USB reset for the device identified by pyuvc uid (e.g. '3:2').
+
+    pyuvc uses libusb directly, so reloading the kernel uvcvideo module does
+    not reset the libusb device state left behind by a previous crashed
+    process.  A USB reset clears that state before we open the device again,
+    preventing the _uvc_process_payload segfault that occurs when libusb
+    receives stale isochronous data from a prior streaming session.
+
+    Uses the USBDEVFS_RESET ioctl on /dev/bus/usb/<bus>/<dev> — no sudo
+    required as long as the calling user has read/write access to the device
+    node (ensured by the udev rules installed by setup_raspi.sh).
+    """
+    import fcntl
+    USBDEVFS_RESET = 0x5514  # <linux/usbdevice_fs.h>
+    try:
+        bus_str, dev_str = uid.split(":")
+        bus = int(bus_str)
+        dev = int(dev_str)
+        dev_path = f"/dev/bus/usb/{bus:03d}/{dev:03d}"
+        with open(dev_path, "wb") as f:
+            fcntl.ioctl(f, USBDEVFS_RESET, 0)
+        time.sleep(0.5)
+        logger_mp.info(f"[UVC] USB reset OK for uid={uid} ({dev_path})")
+    except Exception as e:
+        logger_mp.warning(f"[UVC] USB reset skipped for uid={uid}: {e}")
+
+
 # ========================================================
 # camera finder and cameras
 # ========================================================
@@ -601,7 +630,13 @@ class CameraFinder:
     dev_info: extra info from uvc
     sn: serial number of the camera
     """
-    def __init__(self, realsense_enable=False, verbose=False):
+    def __init__(self, realsense_enable=False, verbose=False, known_video_ids=None):
+        """
+        known_video_ids: optional set/list of integer video device numbers (e.g. {16})
+            that are already known to be valid UVC RGB capture devices.  When provided,
+            the slow cap.read() probe scan is skipped for those paths and they are
+            registered directly.  All other paths are still probed normally.
+        """
         self.verbose = verbose
         # uvc
         reload_uvc_driver()
@@ -619,8 +654,11 @@ class CameraFinder:
             self.rs_serial_numbers = []
             self.rs_video_paths = []
             self.rs_rgb_video_paths = []
-        # rgb & uvc
-        self.uvc_rgb_video_paths = self._list_uvc_rgb_video_paths()
+        # rgb & uvc — skip slow cap.read() probe for paths already known to be valid
+        _known_vpaths = set()
+        if known_video_ids:
+            _known_vpaths = {f"/dev/video{vid}" for vid in known_video_ids}
+        self.uvc_rgb_video_paths = self._list_uvc_rgb_video_paths(skip_probe=_known_vpaths)
         self.uvc_rgb_video_ids = [int(v.replace("/dev/video", "")) for v in self.uvc_rgb_video_paths]
         self.uvc_rgb_physical_paths = [self._get_ppath_from_vpath(v) for v in self.uvc_rgb_video_paths]
         self.uvc_rgb_uids = [self._get_uid_from_ppath(p) for p in self.uvc_rgb_physical_paths]
@@ -653,8 +691,29 @@ class CameraFinder:
             return []
         return [f"/dev/{x}" for x in sorted(os.listdir(base)) if x.startswith("video")]
 
-    def _list_uvc_rgb_video_paths(self):
-        return [p for p in self.video_paths if self._is_like_rgb(p) and p not in self.rs_video_paths]
+    _NON_UVC_NAME_PREFIXES = ("pispbe", "rp1-cfe", "unicam", "bcm2835-isp", "rpivid")
+
+    def _is_non_uvc_device(self, video_path):
+        name_file = f"/sys/class/video4linux/{os.path.basename(video_path)}/name"
+        try:
+            with open(name_file) as f:
+                name = f.read().strip().lower()
+            return any(name.startswith(p) for p in self._NON_UVC_NAME_PREFIXES)
+        except Exception:
+            return False
+
+    def _list_uvc_rgb_video_paths(self, skip_probe=None):
+        result = []
+        for p in self.video_paths:
+            if p in self.rs_video_paths:
+                continue
+            if self._is_non_uvc_device(p):
+                continue
+            if skip_probe and p in skip_probe:
+                result.append(p)
+            elif self._is_like_rgb(p):
+                result.append(p)
+        return result
 
     def _list_realsense_video_paths(self):
         def _read_text(path):
@@ -1077,6 +1136,7 @@ class UVCCamera(BaseCamera):
         import uvc
         self.uid = uid
         self.cap = None
+        reset_usb_device(self.uid)
         try:
             self.cap = uvc.Capture(self.uid)
         except Exception as e:
@@ -1122,16 +1182,26 @@ class UVCCamera(BaseCamera):
                 raise RuntimeError
 
     def release(self):
-        # if usbhub is plugged out, calling stop_streaming and close may hang forever.
-        # try:
-        #     self.cap.stop_streaming()
-        # except Exception:
-        #     pass
-        # try:
-        #     self.cap.close()
-        # except Exception:
-        #     pass
-        # self.cap = None
+        if self.cap is None:
+            return
+        cap = self.cap
+        self.cap = None
+
+        def _do_close():
+            try:
+                cap.stop_streaming()
+            except Exception:
+                pass
+            try:
+                cap.close()
+            except Exception:
+                pass
+
+        t = threading.Thread(target=_do_close, daemon=True)
+        t.start()
+        t.join(timeout=2.0)
+        if t.is_alive():
+            logger_mp.warning(f"[UVCCamera] stop_streaming/close timed out for {self._cam_topic}, skipping")
         logger_mp.info(f"[UVCCamera] Released {self._cam_topic}")
 
 class OpenCVCamera(BaseCamera):
@@ -1186,6 +1256,172 @@ class OpenCVCamera(BaseCamera):
         self.cap.release()
         self.cap = None
         logger_mp.info(f"[OpenCVCamera] Released {self._cam_topic}")
+
+class V4L2Camera(BaseCamera):
+    _VIDIOC_S_FMT       = 0xC0D05605
+    _VIDIOC_REQBUFS     = 0xC0145608
+    _VIDIOC_QUERYBUF    = 0xC0585609
+    _VIDIOC_QBUF        = 0xC058560F
+    _VIDIOC_DQBUF       = 0xC0585611
+    _VIDIOC_STREAMON    = 0x40045612
+    _VIDIOC_STREAMOFF   = 0x40045613
+    _V4L2_BUF_TYPE_VIDEO_CAPTURE = 1
+    _V4L2_MEMORY_MMAP   = 1
+    _V4L2_PIX_FMT_MJPEG = 0x47504A4D
+    _V4L2_FIELD_NONE    = 1
+    _NUM_BUFS           = 4
+
+    def __init__(self, cam_topic, video_path, img_shape, fps,
+                 enable_zmq=True, zmq_port=55555, enable_webrtc=False, webrtc_port=66666, webrtc_codec=None):
+        super().__init__(cam_topic, img_shape, fps, enable_zmq, zmq_port, enable_webrtc, webrtc_port, webrtc_codec)
+        import select as _select
+        self._select = _select
+        self._video_path = video_path
+        self._fd = None
+        self._buffers = []
+        self._buf_lengths = []
+
+        self._fd = os.open(video_path, os.O_RDWR | os.O_NONBLOCK)
+        self._set_format()
+        self._request_buffers()
+        self._start_streaming()
+
+        if not self._can_read_frame():
+            self._stop_streaming()
+            self._release_buffers()
+            os.close(self._fd)
+            self._fd = None
+            raise RuntimeError(f"[V4L2Camera] Camera {self._cam_topic} failed to read first frame.")
+
+        logger_mp.info(str(self))
+
+    def __str__(self):
+        return (
+            f"[V4L2Camera: {self._cam_topic}] initialized with "
+            f"{self._img_shape[0]}x{self._img_shape[1]} @ {self._fps} FPS, MJPG.\n"
+            f"ZMQ: {'enabled, zmq port=' + str(self._zmq_port) if self._enable_zmq else 'disabled'}; "
+            f"WebRTC: {'enabled, webrtc port=' + str(self._webrtc_port) if self._enable_webrtc else 'disabled'}"
+        )
+
+    def _ioctl(self, request, arg):
+        import fcntl
+        return fcntl.ioctl(self._fd, request, arg)
+
+    def _set_format(self):
+        import struct
+        # v4l2_format: type(u32 @0), pad(4), pix.width(u32 @8), pix.height(u32 @12),
+        #   pix.pixelformat(u32 @16), pix.field(u32 @20) — total struct 208 bytes
+        buf = bytearray(208)
+        struct.pack_into('<I', buf,  0, self._V4L2_BUF_TYPE_VIDEO_CAPTURE)
+        struct.pack_into('<I', buf,  8, self._img_shape[1])
+        struct.pack_into('<I', buf, 12, self._img_shape[0])
+        struct.pack_into('<I', buf, 16, self._V4L2_PIX_FMT_MJPEG)
+        struct.pack_into('<I', buf, 20, self._V4L2_FIELD_NONE)
+        self._ioctl(self._VIDIOC_S_FMT, buf)
+
+    def _request_buffers(self):
+        import struct, mmap as _mmap
+        # v4l2_requestbuffers: count(u32 @0), type(u32 @4), memory(u32 @8) — total 20 bytes
+        reqbuf = bytearray(20)
+        struct.pack_into('<I', reqbuf, 0, self._NUM_BUFS)
+        struct.pack_into('<I', reqbuf, 4, self._V4L2_BUF_TYPE_VIDEO_CAPTURE)
+        struct.pack_into('<I', reqbuf, 8, self._V4L2_MEMORY_MMAP)
+        self._ioctl(self._VIDIOC_REQBUFS, reqbuf)
+
+        for i in range(self._NUM_BUFS):
+            qbuf = self._make_v4l2_buffer(i)
+            self._ioctl(self._VIDIOC_QUERYBUF, qbuf)
+            # v4l2_buffer: length(u32 @72), m.offset(u32 @64)
+            length = struct.unpack_from('<I', qbuf, 72)[0]
+            offset = struct.unpack_from('<I', qbuf, 64)[0]
+            buf_mmap = _mmap.mmap(self._fd, length, _mmap.MAP_SHARED, _mmap.PROT_READ | _mmap.PROT_WRITE, offset=offset)
+            self._buffers.append(buf_mmap)
+            self._buf_lengths.append(length)
+            self._ioctl(self._VIDIOC_QBUF, self._make_v4l2_buffer(i))
+
+    def _make_v4l2_buffer(self, index):
+        import struct
+        # v4l2_buffer: index(u32 @0), type(u32 @4), memory(u32 @60) — total 88 bytes
+        buf = bytearray(88)
+        struct.pack_into('<I', buf,  0, index)
+        struct.pack_into('<I', buf,  4, self._V4L2_BUF_TYPE_VIDEO_CAPTURE)
+        struct.pack_into('<I', buf, 60, self._V4L2_MEMORY_MMAP)
+        return buf
+
+    def _start_streaming(self):
+        import struct
+        self._ioctl(self._VIDIOC_STREAMON, struct.pack('<I', self._V4L2_BUF_TYPE_VIDEO_CAPTURE))
+
+    def _stop_streaming(self):
+        import struct
+        try:
+            self._ioctl(self._VIDIOC_STREAMOFF, struct.pack('<I', self._V4L2_BUF_TYPE_VIDEO_CAPTURE))
+        except Exception:
+            pass
+
+    def _release_buffers(self):
+        for m in self._buffers:
+            try:
+                m.close()
+            except Exception:
+                pass
+        self._buffers.clear()
+        self._buf_lengths.clear()
+
+    def _dequeue_frame(self, timeout=0.5):
+        import struct
+        rlist, _, _ = self._select.select([self._fd], [], [], timeout)
+        if not rlist:
+            return None
+        dqbuf = self._make_v4l2_buffer(0)
+        self._ioctl(self._VIDIOC_DQBUF, dqbuf)
+        # v4l2_buffer: index(u32 @0), bytesused(u32 @8)
+        idx  = struct.unpack_from('<I', dqbuf,  0)[0]
+        used = struct.unpack_from('<I', dqbuf,  8)[0]
+        m = self._buffers[idx]
+        m.seek(0)
+        data = m.read(used)
+        self._ioctl(self._VIDIOC_QBUF, self._make_v4l2_buffer(idx))
+        return data
+
+    def _can_read_frame(self):
+        data = self._dequeue_frame(timeout=3.0)
+        if data is None or len(data) == 0:
+            return False
+        for _ in range(29):
+            self._dequeue_frame(timeout=0.1)
+        return True
+
+    def _update_frame(self):
+        if self._fd is None:
+            raise RuntimeError
+        data = self._dequeue_frame(timeout=0.5)
+        if data is None:
+            raise RuntimeError
+
+        if self._enable_zmq:
+            self._zmq_buffer.write(data)
+
+        if self._enable_webrtc:
+            arr = np.frombuffer(data, dtype=np.uint8)
+            bgr = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+            if bgr is not None:
+                self._webrtc_buffer.write(bgr)
+
+        if not self._ready.is_set():
+            self._ready.set()
+
+    def release(self):
+        self._stop_streaming()
+        self._release_buffers()
+        if self._fd is not None:
+            try:
+                os.close(self._fd)
+            except Exception:
+                pass
+            self._fd = None
+        logger_mp.info(f"[V4L2Camera] Released {self._cam_topic}")
+
 
 class IsaacSimCamera(BaseCamera):
     def __init__(self, cam_topic, img_shape, fps,
@@ -1379,27 +1615,32 @@ class PiCamera2Camera(BaseCamera):
         logger_mp.info(f"[PiCamera2Camera] Released {self._cam_topic}")
 
 
-class _MJPEGMemoryOutput:
-    """Minimal picamera2 Output adapter that stores the latest JPEG frame in a
-    triple-ring buffer for lock-free, low-latency access from the capture thread."""
+try:
+    from picamera2.outputs import Output as _Picam2Output  # type: ignore[import]
+except Exception:
+    _Picam2Output = object  # type: ignore[assignment,misc]
+
+class _MJPEGMemoryOutput(_Picam2Output):
 
     def __init__(self):
+        if _Picam2Output is not object:
+            _Picam2Output.__init__(self)
         self._buffer = TripleRingBuffer()
 
-    # picamera2 calls outputframe() for every encoded frame
-    def outputframe(self, frame, keyframe=True, timestamp=None):
+    def outputframe(self, frame, keyframe=True, timestamp=None, packet=None, audio=False):
         if frame:
             self._buffer.write(bytes(frame))
 
     def get_latest(self) -> Optional[bytes]:
         return self._buffer.read()
 
-    # picamera2 may call start/stop on the output object
     def start(self):
-        pass
+        if _Picam2Output is not object:
+            _Picam2Output.start(self)
 
     def stop(self):
-        pass
+        if _Picam2Output is not object:
+            _Picam2Output.stop(self)
 
 # ========================================================
 # image server
@@ -1416,11 +1657,20 @@ class ImageServer:
         # This avoids importing the `uvc` C-extension (unavailable on RPi 5
         # without a USB UVC camera) when all cameras are picamera2 or isaacsim.
         _needs_cam_finder = any(
-            cam_cfg.get("type", "uvc").lower() in ("opencv", "uvc", "realsense")
+            cam_cfg.get("type", "uvc").lower() in ("opencv", "uvc", "realsense", "v4l2")
             for cam_cfg in cam_config.values()
         )
         if not self._isaacsim_enable and _needs_cam_finder:
-            self._cam_finder = CameraFinder(realsense_enable, camera_finder_verbose)
+            _known_video_ids = {
+                int(cam_cfg["video_id"])
+                for cam_cfg in cam_config.values()
+                if cam_cfg.get("type", "uvc").lower() in ("opencv", "uvc", "v4l2")
+                and cam_cfg.get("video_id") is not None
+                and cam_cfg.get("physical_path") is None
+                and cam_cfg.get("serial_number") is None
+            }
+            self._cam_finder = CameraFinder(realsense_enable, camera_finder_verbose,
+                                            known_video_ids=_known_video_ids or None)
         else:
             self._cam_finder = None
 
@@ -1479,9 +1729,36 @@ class ImageServer:
                     else:
                         self._cameras[cam_topic] = OpenCVCamera(cam_topic, video_path, img_shape, fps,
                                                                 enable_zmq, zmq_port, enable_webrtc, webrtc_port, webrtc_codec)
-                        
 
-                elif cam_type == "realsense":
+                elif cam_type == "v4l2":
+                    if physical_path is not None:
+                        vpath = self._cam_finder.get_vpath_by_ppath(physical_path)
+                        if vpath is None:
+                            self._cameras[cam_topic] = None
+                            logger_mp.error(f"[Image Server] Cannot find V4L2Camera for {cam_topic} with physical path {physical_path}")
+                        else:
+                            self._cameras[cam_topic] = V4L2Camera(cam_topic, vpath, img_shape, fps,
+                                                                   enable_zmq, zmq_port, enable_webrtc, webrtc_port, webrtc_codec)
+                        continue
+
+                    if serial_number is not None:
+                        vpath = self._cam_finder.get_vpath_by_sn(serial_number)
+                        if vpath is None:
+                            self._cameras[cam_topic] = None
+                            logger_mp.error(f"[Image Server] Cannot find V4L2Camera for {cam_topic} with serial number {serial_number}")
+                        else:
+                            self._cameras[cam_topic] = V4L2Camera(cam_topic, vpath, img_shape, fps,
+                                                                   enable_zmq, zmq_port, enable_webrtc, webrtc_port, webrtc_codec)
+                        continue
+
+                    if not self._cam_finder.is_vpath_exist(video_path):
+                        self._cameras[cam_topic] = None
+                        logger_mp.error(f"[Image Server] Cannot find V4L2Camera for {cam_topic} with video_id {video_id}")
+                    else:
+                        self._cameras[cam_topic] = V4L2Camera(cam_topic, video_path, img_shape, fps,
+                                                               enable_zmq, zmq_port, enable_webrtc, webrtc_port, webrtc_codec)
+
+
                     if not self._realsense_enable:
                         self._cameras[cam_topic] = None
                         logger_mp.error(f"[Image Server] Please start image server with the '--rs' flag to support Realsense {cam_topic}.")

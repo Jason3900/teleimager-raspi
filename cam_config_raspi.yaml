@@ -4,7 +4,7 @@
 # This file supports two camera types side-by-side:
 #
 #   type: picamera2  →  Raspberry Pi Camera Module (via libcamera / picamera2)
-#   type: uvc        →  USB UVC camera (via pupil-labs-uvc)
+#   type: v4l2        →  USB UVC camera (via pupil-labs-uvc)
 #
 # You can configure any mix of picamera2 and uvc entries in this file.
 # Each entry is an independent camera topic; ports must be unique.
@@ -18,7 +18,7 @@
 # =====================================================
 # Single Pi Camera Module (head camera)
 # =====================================================
-head_camera:
+first_camera:
   # if enable_zmq and enable_webrtc are both false, the camera will not start
   # Set to true to enable ZMQ publishing, false to disable
   enable_zmq: true
@@ -39,7 +39,7 @@ head_camera:
 
   # Image Format
   # image resolution: [height, width]
-  image_shape: [480, 640]
+  image_shape: [720, 1280]
   binocular: false
   # frame per second
   fps: 30
@@ -56,20 +56,20 @@ head_camera:
 # Uncomment and configure the block below to add a second Pi Camera Module.
 # Requires a Raspberry Pi with two camera connectors (e.g. RPi 5 or CM4).
 #
-# second_camera:
-#   enable_zmq: true
-#   zmq_port: 55556
-#   enable_webrtc: true
-#   webrtc_port: 60002
-#   webrtc_codec: h264
-#   type: picamera2
-#   camera_num: 1
-#   image_shape: [480, 640]
-#   binocular: false
-#   fps: 30
-#   video_id: null
-#   serial_number: null
-#   physical_path: null
+second_camera:
+  enable_zmq: true
+  zmq_port: 55556
+  enable_webrtc: true
+  webrtc_port: 60002
+  webrtc_codec: h264
+  type: picamera2
+  camera_num: 1
+  image_shape: [720, 1280]
+  binocular: false
+  fps: 30
+  video_id: null
+  serial_number: null
+  physical_path: null
 
 # =====================================================
 # USB UVC camera (optional)
@@ -84,17 +84,17 @@ head_camera:
 # To discover connected UVC cameras and their identifiers, run:
 #   teleimager-server --cf
 #
-# uvc_camera:
-#   enable_zmq: true
-#   zmq_port: 55557
-#   enable_webrtc: true
-#   webrtc_port: 60003
-#   webrtc_codec: h264
-#   type: uvc
-#   image_shape: [480, 640]
-#   binocular: false
-#   fps: 30
-#   # Camera identifiers (choose one or more; priority: physical_path > serial_number > video_id):
-#   video_id: 0          # /dev/videoX  (e.g. 0 → /dev/video0)
-#   serial_number: null  # camera hardware serial (e.g. 200901010001)
-#   physical_path: null  # sysfs USB path (e.g. /sys/devices/pci0000:00/.../1-1:1.0)
+head_camera:
+  enable_zmq: true
+  zmq_port: 55557
+  enable_webrtc: true
+  webrtc_port: 60003
+  webrtc_codec: h264
+  type: v4l2
+  image_shape: [480, 640]
+  binocular: false
+  fps: 120
+  # Camera identifiers (choose one or more; priority: physical_path > serial_number > video_id):
+  video_id: null
+  serial_number: null
+  physical_path: /sys/devices/platform/axi/1000120000.pcie/1f00300000.usb/xhci-hcd.1/usb3/3-1/3-1:1.0
