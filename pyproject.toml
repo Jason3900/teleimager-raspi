@@ -29,6 +29,7 @@ raspi = [
     "picamera2",
     "aiohttp",
     "aiortc",
+    "pupil-labs-uvc",
 ]
 
 [project.urls]

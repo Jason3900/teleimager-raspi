@@ -1,7 +1,23 @@
 # =====================================================
 # Raspberry Pi 5 camera configuration
 # =====================================================
+# This file supports two camera types side-by-side:
+#
+#   type: picamera2  →  Raspberry Pi Camera Module (via libcamera / picamera2)
+#   type: uvc        →  USB UVC camera (via pupil-labs-uvc)
+#
+# You can configure any mix of picamera2 and uvc entries in this file.
+# Each entry is an independent camera topic; ports must be unique.
+#
+# UVC cameras require extra one-time system setup (run setup_raspi.sh once):
+#   - USB udev rules so the 'video' group can open the device
+#   - Passwordless sudo for `modprobe uvcvideo` (driver reset on startup)
+#   - pupil-labs-uvc Python package (included in the [raspi] install extra)
+# =====================================================
+
+# =====================================================
 # Single Pi Camera Module (head camera)
+# =====================================================
 head_camera:
   # if enable_zmq and enable_webrtc are both false, the camera will not start
   # Set to true to enable ZMQ publishing, false to disable
@@ -28,8 +44,8 @@ head_camera:
   # frame per second
   fps: 30
 
-  # The following identifiers are not used for picamera2 cameras.
-  # Leave them as null.
+  # The following identifiers (video_id, serial_number, physical_path) are used
+  # only for uvc/opencv camera types.  Leave them as null for picamera2 cameras.
   video_id: null
   serial_number: null
   physical_path: null
@@ -54,3 +70,31 @@ head_camera:
 #   video_id: null
 #   serial_number: null
 #   physical_path: null
+
+# =====================================================
+# USB UVC camera (optional)
+# =====================================================
+# Uncomment and configure the block below to add a USB UVC camera alongside
+# the Pi Camera Module(s) above.  Run setup_raspi.sh first to install the
+# required system dependencies (udev rules, modprobe sudoers, pupil-labs-uvc).
+#
+# Camera identifier priority: physical_path > serial_number > video_id
+# Set unused identifiers to null.
+#
+# To discover connected UVC cameras and their identifiers, run:
+#   teleimager-server --cf
+#
+# uvc_camera:
+#   enable_zmq: true
+#   zmq_port: 55557
+#   enable_webrtc: true
+#   webrtc_port: 60003
+#   webrtc_codec: h264
+#   type: uvc
+#   image_shape: [480, 640]
+#   binocular: false
+#   fps: 30
+#   # Camera identifiers (choose one or more; priority: physical_path > serial_number > video_id):
+#   video_id: 0          # /dev/videoX  (e.g. 0 → /dev/video0)
+#   serial_number: null  # camera hardware serial (e.g. 200901010001)
+#   physical_path: null  # sysfs USB path (e.g. /sys/devices/pci0000:00/.../1-1:1.0)
