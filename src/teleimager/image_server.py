@@ -760,17 +760,21 @@ class CameraFinder:
         # Redirect OS-level stderr while probing so that ffmpeg/v4l2 error
         # messages from non-capture devices (e.g. libcamera ISP nodes on
         # Raspberry Pi) do not pollute the console output.
+        # Note: contextlib.redirect_stderr only redirects Python's sys.stderr;
+        # ffmpeg writes directly to OS fd 2, so os.dup2 is required here.
         devnull_fd = os.open(os.devnull, os.O_WRONLY)
         saved_stderr = os.dup(2)
         os.dup2(devnull_fd, 2)
+        cap = None
         try:
             cap = cv2.VideoCapture(video_path)
             if not cap.isOpened():
                 return False
             ret, frame = cap.read()
-            cap.release()
             return ret and frame is not None and frame.ndim == 3 and frame.shape[2] == 3
         finally:
+            if cap is not None:
+                cap.release()
             os.dup2(saved_stderr, 2)
             os.close(saved_stderr)
             os.close(devnull_fd)
