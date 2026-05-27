@@ -756,7 +756,7 @@ class CameraFinder:
             return f"{bus}:{dev}"
         return None
 
-    def _is_like_rgb(self, video_path):
+    def _is_like_rgb(self, video_path, timeout=3.0):
         # Redirect OS-level stderr while probing so that ffmpeg/v4l2 error
         # messages from non-capture devices (e.g. libcamera ISP nodes on
         # Raspberry Pi) do not pollute the console output.
@@ -765,16 +765,28 @@ class CameraFinder:
         devnull_fd = os.open(os.devnull, os.O_WRONLY)
         saved_stderr = os.dup(2)
         os.dup2(devnull_fd, 2)
-        cap = None
         try:
             cap = cv2.VideoCapture(video_path)
             if not cap.isOpened():
-                return False
-            ret, frame = cap.read()
-            return ret and frame is not None and frame.ndim == 3 and frame.shape[2] == 3
-        finally:
-            if cap is not None:
                 cap.release()
+                return False
+            result = [False]
+
+            def _read_and_release():
+                try:
+                    ret, frame = cap.read()
+                    result[0] = ret and frame is not None and frame.ndim == 3 and frame.shape[2] == 3
+                finally:
+                    cap.release()
+
+            t = threading.Thread(target=_read_and_release, daemon=True)
+            t.start()
+            t.join(timeout)
+            if t.is_alive():
+                logger_mp.warning(f"cap.read() timed out for {video_path}, skipping.")
+                return False
+            return result[0]
+        finally:
             os.dup2(saved_stderr, 2)
             os.close(saved_stderr)
             os.close(devnull_fd)
