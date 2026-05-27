@@ -70,49 +70,92 @@ CERT_PEM_PATH = CERT_PEM_PATH.resolve()
 KEY_PEM_PATH = KEY_PEM_PATH.resolve()
 
 # ========================================================
-# libx264 for Jetson (Patch h264 Encoder)
+# H264 encoder patch for ARM platforms (Jetson + Raspberry Pi 5)
 # ========================================================
-def jetson_software_encode_frame(self, frame: av.VideoFrame, force_keyframe: bool):
-    if self.codec and (frame.width != self.codec.width or frame.height != self.codec.height):
-        self.codec = None
+def _make_software_encode_frame(codec_name: str):
+    """Build an _encode_frame method using the given codec name (e.g. libx264, h264_v4l2m2m)."""
+    def _encode_frame(self, frame: av.VideoFrame, force_keyframe: bool):
+        if self.codec and (frame.width != self.codec.width or frame.height != self.codec.height):
+            self.codec = None
 
-    if self.codec is None:
-        try:
-            self.codec = av.CodecContext.create("libx264", "w")
-            self.codec.width = frame.width
-            self.codec.height = frame.height
-            self.codec.bit_rate = self.target_bitrate
-            self.codec.pix_fmt = "yuv420p"
-            self.codec.framerate = fractions.Fraction(30, 1)
-            self.codec.time_base = fractions.Fraction(1, 30)
-        
-            self.codec.options = {
-                "preset": "ultrafast",
-                "tune": "zerolatency",
-                "threads": "1",
-                "g": "60",
-            }
-            self.frame_count = 0
+        if self.codec is None:
+            try:
+                self.codec = av.CodecContext.create(codec_name, "w")
+                self.codec.width = frame.width
+                self.codec.height = frame.height
+                self.codec.bit_rate = self.target_bitrate
+                self.codec.pix_fmt = "yuv420p"
+                self.codec.framerate = fractions.Fraction(30, 1)
+                self.codec.time_base = fractions.Fraction(1, 30)
+
+                if codec_name == "libx264":
+                    self.codec.options = {
+                        "preset": "ultrafast",
+                        "tune": "zerolatency",
+                        "threads": "1",
+                        "g": "60",
+                    }
+                elif codec_name == "h264_v4l2m2m":
+                    self.codec.options = {
+                        "b": str(self.target_bitrate),
+                    }
+
+                self.frame_count = 0
+                force_keyframe = True
+            except Exception as e:
+                logger_mp.error(f"[H264 Patch] Initialization failed with {codec_name}: {e}")
+                return
+
+        if not force_keyframe and hasattr(self, "frame_count") and self.frame_count % 60 == 0:
             force_keyframe = True
+
+        self.frame_count = self.frame_count + 1 if hasattr(self, "frame_count") else 1
+        frame.pict_type = av.video.frame.PictureType.I if force_keyframe else av.video.frame.PictureType.NONE
+
+        try:
+            for packet in self.codec.encode(frame):
+                data = bytes(packet)
+                if data:
+                    yield from self._split_bitstream(data)
         except Exception as e:
-            logger_mp.error(f"[H264 Patch] Initialization failed: {e}")
-            return
+            logger_mp.warning(f"[H264 Patch] Encode error: {e}")
 
-    if not force_keyframe and hasattr(self, "frame_count") and self.frame_count % 60 == 0:
-        force_keyframe = True
-    
-    self.frame_count = self.frame_count + 1 if hasattr(self, "frame_count") else 1
-    frame.pict_type = av.video.frame.PictureType.I if force_keyframe else av.video.frame.PictureType.NONE
+    return _encode_frame
 
+
+def _configure_h264_encoder():
+    """
+    Select and apply the best available H264 encoder for the current platform.
+
+    Priority:
+      1. h264_v4l2m2m — RPi 5 (and other ARM64 boards) hardware encoder
+      2. libx264       — software fallback (Jetson, x86, etc.)
+
+    The chosen encoder is monkey-patched into aiortc's H264Encoder so that
+    WebRTC streams are encoded efficiently on every supported platform.
+    """
+    # Try hardware encoder first (Raspberry Pi 5 / V4L2 M2M)
     try:
-        for packet in self.codec.encode(frame):
-            data = bytes(packet)
-            if data:
-                yield from self._split_bitstream(data)
-    except Exception as e:
-        logger_mp.warning(f"[H264 Patch] Encode error: {e}")
+        test_ctx = av.CodecContext.create("h264_v4l2m2m", "w")
+        test_ctx.width = 64
+        test_ctx.height = 64
+        test_ctx.pix_fmt = "yuv420p"
+        test_ctx.framerate = fractions.Fraction(30, 1)
+        test_ctx.time_base = fractions.Fraction(1, 30)
+        test_ctx.open()
+        test_ctx.close()
+        h264.H264Encoder._encode_frame = _make_software_encode_frame("h264_v4l2m2m")
+        logger_mp.info("[H264 Patch] Using hardware encoder: h264_v4l2m2m")
+        return
+    except Exception:
+        pass
 
-h264.H264Encoder._encode_frame = jetson_software_encode_frame
+    # Fall back to libx264 software encoder (Jetson / x86)
+    h264.H264Encoder._encode_frame = _make_software_encode_frame("libx264")
+    logger_mp.info("[H264 Patch] Using software encoder: libx264")
+
+
+_configure_h264_encoder()
 
 # ========================================================
 # Embed HTML and JS directly
@@ -1196,6 +1239,138 @@ class IsaacSimCamera(BaseCamera):
             self.multi_image_reader.close()
         self.multi_image_reader = None
         logger_mp.info(f"[IsaacSimCamera] Released {self._cam_topic}")
+
+class PiCamera2Camera(BaseCamera):
+    """Camera driver for Raspberry Pi Camera Modules via the picamera2 / libcamera stack.
+
+    For ZMQ publishing the native MJPEG encoder pipeline is used when available,
+    which lets the ISP produce JPEG bytes directly and avoids a redundant
+    BGR→JPEG re-encode step.  When WebRTC is also enabled the camera is
+    configured in a mixed mode: the ISP delivers BGR (RGB888) frames that are
+    written to both buffers.
+    """
+
+    def __init__(self, cam_topic, camera_num, img_shape, fps,
+                 enable_zmq=True, zmq_port=55555, enable_webrtc=False, webrtc_port=66666, webrtc_codec=None):
+        super().__init__(cam_topic, img_shape, fps, enable_zmq, zmq_port, enable_webrtc, webrtc_port, webrtc_codec)
+        self._camera_num = camera_num
+        self._use_mjpeg_pipeline = enable_zmq and not enable_webrtc  # native JPEG only when WebRTC is off
+        self._picam2 = None
+        self._mjpeg_output = None
+
+        try:
+            from picamera2 import Picamera2  # type: ignore[import]
+            self._picam2 = Picamera2(camera_num)
+
+            if self._use_mjpeg_pipeline:
+                # Native MJPEG path: ISP → JPEG bytes, no Python-side re-encode
+                from picamera2.encoders import MJPEGEncoder  # type: ignore[import]
+                from picamera2.outputs import FileOutput  # type: ignore[import]
+                import io
+
+                self._mjpeg_encoder = MJPEGEncoder()
+                self._mjpeg_output = _MJPEGMemoryOutput()
+                config = self._picam2.create_video_configuration(
+                    main={"size": (img_shape[1], img_shape[0])},
+                    controls={"FrameRate": float(fps)},
+                )
+                self._picam2.configure(config)
+                self._picam2.start_recording(self._mjpeg_encoder, self._mjpeg_output)
+            else:
+                # BGR path: used when WebRTC is enabled (or both ZMQ + WebRTC)
+                config = self._picam2.create_video_configuration(
+                    main={"size": (img_shape[1], img_shape[0]), "format": "BGR888"},
+                    controls={"FrameRate": float(fps)},
+                )
+                self._picam2.configure(config)
+                self._picam2.start()
+
+            logger_mp.info(str(self))
+        except ImportError:
+            raise ImportError(
+                "[PiCamera2Camera] picamera2 is not installed. "
+                "Install it with: sudo apt install python3-picamera2\n"
+                "or: pip install picamera2"
+            )
+        except Exception as e:
+            self._release_safe()
+            raise RuntimeError(f"[PiCamera2Camera] Failed to initialize camera {camera_num}: {e}")
+
+    def __str__(self):
+        mode = "MJPEG-pipeline" if self._use_mjpeg_pipeline else "BGR-capture"
+        return (
+            f"[PiCamera2Camera: {self._cam_topic}] camera_num={self._camera_num}, "
+            f"{self._img_shape[0]}x{self._img_shape[1]} @ {self._fps} FPS, mode={mode}.\n"
+            f"ZMQ: {'enabled, zmq port=' + str(self._zmq_port) if self._enable_zmq else 'disabled'}; "
+            f"WebRTC: {'enabled, webrtc port=' + str(self._webrtc_port) if self._enable_webrtc else 'disabled'}"
+        )
+
+    def _update_frame(self):
+        if self._picam2 is None:
+            raise RuntimeError("[PiCamera2Camera] Camera not initialized")
+
+        if self._use_mjpeg_pipeline:
+            # Native JPEG from the ISP; no decode needed
+            jpg_bytes = self._mjpeg_output.get_latest()
+            if jpg_bytes is not None:
+                self._zmq_buffer.write(jpg_bytes)
+                if not self._ready.is_set():
+                    self._ready.set()
+        else:
+            # BGR capture (supports both ZMQ and WebRTC)
+            bgr_frame = self._picam2.capture_array("main")
+            if bgr_frame is not None:
+                if self._enable_webrtc:
+                    self._webrtc_buffer.write(bgr_frame)
+
+                if self._enable_zmq:
+                    ok, buf = cv2.imencode(".jpg", bgr_frame)
+                    if ok:
+                        self._zmq_buffer.write(buf.tobytes())
+
+                if not self._ready.is_set():
+                    self._ready.set()
+
+    def _release_safe(self):
+        try:
+            if self._picam2 is not None:
+                if self._use_mjpeg_pipeline:
+                    self._picam2.stop_recording()
+                else:
+                    self._picam2.stop()
+                self._picam2.close()
+        except Exception as e:
+            logger_mp.warning(f"[PiCamera2Camera] Error during release: {e}")
+        finally:
+            self._picam2 = None
+
+    def release(self):
+        self._release_safe()
+        logger_mp.info(f"[PiCamera2Camera] Released {self._cam_topic}")
+
+
+class _MJPEGMemoryOutput:
+    """Minimal picamera2 Output adapter that stores the latest JPEG frame in a
+    triple-ring buffer for lock-free, low-latency access from the capture thread."""
+
+    def __init__(self):
+        self._buffer = TripleRingBuffer()
+
+    # picamera2 calls outputframe() for every encoded frame
+    def outputframe(self, frame, keyframe=True, timestamp=None):
+        if frame:
+            self._buffer.write(bytes(frame))
+
+    def get_latest(self) -> Optional[bytes]:
+        return self._buffer.read()
+
+    # picamera2 may call start/stop on the output object
+    def start(self):
+        pass
+
+    def stop(self):
+        pass
+
 # ========================================================
 # image server
 # ========================================================
@@ -1206,8 +1381,19 @@ class ImageServer:
         self._isaacsim_enable = isaacsim_enable
         self._stop_event = threading.Event()
         self._cameras: dict[str, BaseCamera] = {}
-        if not self._isaacsim_enable:
+
+        # Only instantiate CameraFinder when at least one camera needs it.
+        # This avoids importing the `uvc` C-extension (unavailable on RPi 5
+        # without a USB UVC camera) when all cameras are picamera2 or isaacsim.
+        _needs_cam_finder = any(
+            cam_cfg.get("type", "uvc").lower() in ("opencv", "uvc", "realsense")
+            for cam_cfg in cam_config.values()
+        )
+        if not self._isaacsim_enable and _needs_cam_finder:
             self._cam_finder = CameraFinder(realsense_enable, camera_finder_verbose)
+        else:
+            self._cam_finder = None
+
         self._responser = ZMQ_Responser(self._cam_config)
         self._zmq_publisher_manager = ZMQ_PublisherManager.get_instance()
         self._webrtc_publisher_manager = WebRTC_PublisherManager.get_instance()
@@ -1299,6 +1485,14 @@ class ImageServer:
                         # once you specify either `physical_path` or `serial_number`, the system will no longer fall back to searching by `video_id`.
                         # ——— even if no camera matches the given path/serial.
                         continue
+
+                elif cam_type == "picamera2":
+                    camera_num = int(cam_cfg.get("camera_num", 0))
+                    self._cameras[cam_topic] = PiCamera2Camera(
+                        cam_topic, camera_num, img_shape, fps,
+                        enable_zmq, zmq_port, enable_webrtc, webrtc_port, webrtc_codec,
+                    )
+
                 elif cam_type == "isaacsim":
                     # Check if binocular mode is enabled
                     binocular = cam_cfg.get("binocular", False)
@@ -1521,6 +1715,7 @@ def main():
         "\n"
         "Note:\n"
         " - If you have RealSense cameras, add the '--rs' flag to enable RealSense support.\n"
+        " - For Raspberry Pi 5 with Pi Camera Module, use '--raspi' or '--config cam_config_raspi.yaml'.\n"
         " - Make sure you have proper permissions to access the camera devices (e.g., run with sudo or set udev rules).\n"
         "=========================================================================="
     )
@@ -1529,6 +1724,9 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--cf', action = 'store_true', help = 'Enable camera found mode, print all connected cameras info')
     parser.add_argument('--rs', action = 'store_true', help = 'Enable RealSense camera mode. Otherwise only find UVC/OpenCV cameras.')
+    parser.add_argument('--raspi', action = 'store_true', help = 'Raspberry Pi 5 mode: load cam_config_raspi.yaml by default.')
+    parser.add_argument('--config', type=str, default=None,
+                        help='Path to a custom YAML config file. Overrides the default cam_config_server.yaml (or cam_config_raspi.yaml when --raspi is set).')
     parser.add_argument('--no-affinity', action='store_false', dest='affinity', help='Disable CPU affinity setting for performance optimization.')
     args = parser.parse_args()
 
@@ -1540,12 +1738,23 @@ def main():
         CameraFinder(realsense_enable=args.rs, verbose=True)
         exit(0)
 
+    # Resolve config file path
+    if args.config:
+        config_path = os.path.normpath(args.config)
+    elif args.raspi:
+        config_path = os.path.normpath(os.path.join(
+            os.path.dirname(os.path.abspath(__file__)),
+            "..", "..", "cam_config_raspi.yaml"
+        ))
+    else:
+        config_path = CONFIG_PATH
+
     # Load config file, start image server
     try:
-        with open(CONFIG_PATH, "r") as f:
+        with open(config_path, "r") as f:
             cam_config = yaml.safe_load(f)
     except Exception as e:
-        logger_mp.error(f"Failed to load configuration file at {CONFIG_PATH}: {e}")
+        logger_mp.error(f"Failed to load configuration file at {config_path}: {e}")
         exit(1)
 
     # start image server

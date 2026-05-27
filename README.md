@@ -381,6 +381,82 @@ Different scenarios (local, LAN, remote) require different latency and bandwidth
     sudo $(which teleimager-server) --cf
     ```
 
-## 6. 🙏 Acknowledgement
+## 6. 🍓 Raspberry Pi 5 Support
+
+Tele Imager supports **Raspberry Pi 5** with Pi Camera Modules (Camera Module 3, HQ Camera, etc.) via the `picamera2` / `libcamera` stack.
+
+### 6.1 📥 Environment Setup (RPi 5)
+
+1. Run the RPi 5 setup script to install system prerequisites:
+
+   ```bash
+   bash setup_raspi.sh
+   ```
+
+   This installs `python3-picamera2`, `libcamera-dev`, `libturbojpeg-dev`, and configures udev rules.
+
+2. Enable the Pi Camera interface in `raspi-config` (if not already enabled):
+
+   ```bash
+   sudo raspi-config
+   # Navigate to: Interface Options → Camera → Enable
+   # Reboot after enabling.
+   ```
+
+3. Install Tele Imager with the Raspberry Pi extras:
+
+   ```bash
+   pip install -e ".[raspi]"
+   ```
+
+   > Note: `picamera2` is best provided via the system package `python3-picamera2`. If you use a `venv`, create it with `--system-site-packages` so picamera2 is visible:
+   > ```bash
+   > python3 -m venv --system-site-packages venv && source venv/bin/activate
+   > pip install -e ".[raspi]"
+   > ```
+
+### 6.2 🔍 Discover Connected Pi Cameras
+
+```bash
+python -c "from picamera2 import Picamera2; print(Picamera2.global_camera_info())"
+```
+
+### 6.3 📡 Start the Image Server on RPi 5
+
+1. Edit `cam_config_raspi.yaml` to match your camera setup (resolution, FPS, ports).
+
+2. Start the server:
+
+   ```bash
+   teleimager-server --raspi
+   # or specify a custom config:
+   teleimager-server --config cam_config_raspi.yaml
+   ```
+
+### 6.4 🖥️ Connect from a Client
+
+On any machine on the same network:
+
+```bash
+teleimager-client --host <raspberry-pi-ip>
+# e.g. for a typical RPi hotspot:
+teleimager-client --host 192.168.4.1
+```
+
+### 6.5 ⚡ H264 Hardware Encoding
+
+On RPi 5, Tele Imager automatically detects and uses the **`h264_v4l2m2m`** V4L2 hardware encoder for WebRTC streams, giving better performance than software `libx264`. If the hardware encoder is unavailable, it falls back to `libx264` automatically.
+
+### 6.6 📝 Key Differences vs Jetson
+
+| Feature | Jetson (Orin NX) | Raspberry Pi 5 |
+|---|---|---|
+| Camera driver | UVC / OpenCV / RealSense | `picamera2` (libcamera) |
+| Install extras | `pip install -e ".[server]"` | `pip install -e ".[raspi]"` |
+| H264 encoder | libx264 (software) | h264_v4l2m2m (hardware) / libx264 |
+| Config file | `cam_config_server.yaml` | `cam_config_raspi.yaml` |
+| Server flag | *(default)* | `--raspi` |
+
+## 7. 🧐 Acknowledgement
 
 Some code references: https://github.com/ARCLab-MIT/beavr-bot

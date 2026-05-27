@@ -7,7 +7,7 @@ authors = [
 ]
 license = { file = "LICENSE" }
 readme = "README.md"
-requires-python = ">=3.8,<3.12"
+requires-python = ">=3.8,<3.13"
 dependencies = [
     "logging_mp",
     "opencv-python",
@@ -21,6 +21,12 @@ server = [
     "aiohttp",
     "aiortc",
     "pupil-labs-uvc",
+]
+# execute pip install -e ".[raspi]" to install Raspberry Pi 5 dependencies
+raspi = [
+    "picamera2",
+    "aiohttp",
+    "aiortc",
 ]
 
 [project.urls]

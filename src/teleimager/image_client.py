@@ -678,7 +678,7 @@ class ImageClient:
     def __init__(self, host="192.168.123.164", request_port=60000, request_bgr: bool = False):
         """
         Args:
-            server_address:   IP address of image host server
+            host:             IP address of image host server
             request_port:     TCP port for camera configuration request
             request_bgr:      Whether to request BGR decoding for subscribers
         """
@@ -693,18 +693,19 @@ class ImageClient:
 
         if self._cam_config is None:
             raise RuntimeError("Failed to get camera configuration.")
-        
-        if self._cam_config['head_camera']['enable_zmq']:
-            self._subscriber_manager.subscribe(self._host, self._cam_config['head_camera']['zmq_port'], request_bgr=self._request_bgr)
 
-        if self._cam_config['left_wrist_camera']['enable_zmq']:
-            self._subscriber_manager.subscribe(self._host, self._cam_config['left_wrist_camera']['zmq_port'], request_bgr=self._request_bgr)
+        # Dynamically subscribe to every camera that has ZMQ enabled.
+        # This supports any number of cameras (1 on RPi 5, 3 on Jetson, etc.).
+        for cam_topic, cam_cfg in self._cam_config.items():
+            if cam_cfg.get("enable_zmq", False):
+                self._subscriber_manager.subscribe(
+                    self._host, cam_cfg["zmq_port"], request_bgr=self._request_bgr
+                )
 
-        if self._cam_config['right_wrist_camera']['enable_zmq']:
-            self._subscriber_manager.subscribe(self._host, self._cam_config['right_wrist_camera']['zmq_port'], request_bgr=self._request_bgr)
-
-        if not self._cam_config['head_camera']['enable_zmq'] and not self._cam_config['head_camera']['enable_webrtc']:
-            logger_mp.warning("[Image Client] NOTICE! Head camera is not enabled on both ZMQ and WebRTC.")
+        # Warn if any camera has neither transport enabled
+        for cam_topic, cam_cfg in self._cam_config.items():
+            if not cam_cfg.get("enable_zmq", False) and not cam_cfg.get("enable_webrtc", False):
+                logger_mp.warning(f"[Image Client] NOTICE! {cam_topic} is not enabled on both ZMQ and WebRTC.")
 
     # --------------------------------------------------------
     # public api
@@ -712,14 +713,33 @@ class ImageClient:
     def get_cam_config(self):
         return self._cam_config
 
+    def get_frame(self, cam_topic: str) -> "TeleImage":
+        """Get the latest frame for any camera by its topic name.
+
+        Args:
+            cam_topic: The camera topic key as defined in the config (e.g. 'head_camera').
+
+        Returns:
+            A TeleImage with fps, raw JPEG bytes, and optionally a decoded BGR array.
+        """
+        cam_cfg = self._cam_config.get(cam_topic)
+        if cam_cfg is None:
+            raise KeyError(f"[Image Client] Unknown camera topic '{cam_topic}'. "
+                           f"Available topics: {list(self._cam_config.keys())}")
+        if not cam_cfg.get("enable_zmq", False):
+            raise RuntimeError(f"[Image Client] Camera '{cam_topic}' does not have ZMQ enabled.")
+        return self._subscriber_manager.subscribe(
+            self._host, cam_cfg["zmq_port"], request_bgr=self._request_bgr
+        )
+
     def get_head_frame(self):
-        return self._subscriber_manager.subscribe(self._host, self._cam_config['head_camera']['zmq_port'], request_bgr=self._request_bgr)
+        return self.get_frame("head_camera")
     
     def get_left_wrist_frame(self):
-        return self._subscriber_manager.subscribe(self._host, self._cam_config['left_wrist_camera']['zmq_port'], request_bgr=self._request_bgr)
+        return self.get_frame("left_wrist_camera")
     
     def get_right_wrist_frame(self):
-        return self._subscriber_manager.subscribe(self._host, self._cam_config['right_wrist_camera']['zmq_port'], request_bgr=self._request_bgr)
+        return self.get_frame("right_wrist_camera")
         
     def close(self):
         self._subscriber_manager.close()
@@ -729,36 +749,23 @@ def main():
     # command line args
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument('--host', type=str, default='192.168.123.164', help='IP address of image server')
+    parser.add_argument('--host', type=str, default='192.168.123.164',
+                        help='IP address of image server (e.g. 192.168.4.1 for RPi hotspot)')
     args = parser.parse_args()
 
-    # Example usage with three camera streams
+    # Example usage: dynamically display all available camera streams
     client = ImageClient(host=args.host, request_bgr=True)
     cam_config = client.get_cam_config()
 
     running = True
     while running:
-        if cam_config['head_camera']['enable_zmq']:
-            head_img = client.get_head_frame()
-            if head_img.bgr is not None:
-                logger_mp.info(f"Head Camera FPS: {head_img.fps:.2f}")
-                logger_mp.debug(f"Head Camera Shape: {cam_config['head_camera']['image_shape']}")
-                logger_mp.debug(f"Head Camera Binocular: {cam_config['head_camera']['binocular']}")
-                cv2.imshow("Head Camera", head_img.bgr)
-
-        if cam_config['left_wrist_camera']['enable_zmq']:
-            left_wrist_img = client.get_left_wrist_frame()
-            if left_wrist_img.bgr is not None:
-                logger_mp.info(f"Left Wrist Camera FPS: {left_wrist_img.fps:.2f}")
-                logger_mp.debug(f"Left Wrist Camera Shape: {cam_config['left_wrist_camera']['image_shape']}")
-                cv2.imshow("Left Wrist Camera", left_wrist_img.bgr)
-
-        if cam_config['right_wrist_camera']['enable_zmq']:
-            right_wrist_img = client.get_right_wrist_frame()
-            if right_wrist_img.bgr is not None:
-                logger_mp.info(f"Right Wrist Camera FPS: {right_wrist_img.fps:.2f}")
-                logger_mp.debug(f"Right Wrist Camera Shape: {cam_config['right_wrist_camera']['image_shape']}")
-                cv2.imshow("Right Wrist Camera", right_wrist_img.bgr)
+        for cam_topic, cam_cfg in cam_config.items():
+            if not cam_cfg.get("enable_zmq", False):
+                continue
+            img = client.get_frame(cam_topic)
+            if img.bgr is not None:
+                logger_mp.info(f"{cam_topic} FPS: {img.fps:.2f}")
+                cv2.imshow(cam_topic, img.bgr)
 
         if cv2.waitKey(1) & 0xFF == ord('q'):
             logger_mp.info("Exiting image client on user request.")
