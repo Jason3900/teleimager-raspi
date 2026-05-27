@@ -17,10 +17,12 @@ import argparse
 import os
 import time
 
+from typing import Optional
+
 import cv2
 import numpy as np
 
-from teleimager.image_client import ImageClient
+from teleimager.image_client import ImageClient, TeleImage
 
 
 def save_frame_as_png(bgr_image: np.ndarray, output_path: str) -> None:
@@ -31,8 +33,13 @@ def save_frame_as_png(bgr_image: np.ndarray, output_path: str) -> None:
     print(f"  Saved: {output_path}")
 
 
-def wait_for_frame(client: ImageClient, cam_topic: str, timeout: float = 5.0):
-    """Poll get_frame() until a non-None BGR image is available or timeout expires."""
+def wait_for_frame(client: ImageClient, cam_topic: str, timeout: float = 5.0) -> Optional[TeleImage]:
+    """Poll get_frame() until a non-None BGR image is available or timeout expires.
+
+    Returns:
+        A TeleImage with a decoded BGR array on success, or None if the timeout expires
+        before a valid frame is received.
+    """
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         frame = client.get_frame(cam_topic)
