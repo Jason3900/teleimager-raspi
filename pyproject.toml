@@ -25,8 +25,12 @@ server = [
     "pupil-labs-uvc",
 ]
 # execute pip install -e ".[raspi]" to install Raspberry Pi 5 dependencies
+# NOTE: picamera2 is intentionally omitted here – it must be installed at the
+# system level via: sudo apt install python3-picamera2 python3-libcamera
+# The .venv is created with --system-site-packages so it is visible there.
+# Installing picamera2 via pip overrides the apt version and breaks the
+# libcamera native bindings, causing ImportError at runtime.
 raspi = [
-    "picamera2",
     "aiohttp",
     "aiortc",
     "pupil-labs-uvc",
