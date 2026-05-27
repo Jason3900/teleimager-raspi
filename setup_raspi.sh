@@ -10,7 +10,9 @@
 #   1. Installs system packages required by picamera2 / libcamera
 #   2. Installs libturbojpeg for fast JPEG encoding
 #   3. Sets up optional udev rules for USB cameras (if needed alongside Pi cameras)
-#   4. Prints instructions for enabling the Pi Camera interface
+#   4. Installs uv and creates a .venv with --system-site-packages
+#   5. Installs Tele Imager Python dependencies into the venv
+#   6. Prints instructions for enabling the Pi Camera interface
 # =============================================================================
 
 set -euo pipefail
@@ -66,9 +68,34 @@ if ! groups "$USER" | grep -q '\bvideo\b'; then
     warn "Added '$USER' to the 'video' group. You must log out and back in (or reboot) for this to take effect."
 fi
 
-# ── 3. Python package installation reminder ───────────────────────────────────
+# ── 3. Install uv ─────────────────────────────────────────────────────────────
+if ! command -v uv &>/dev/null; then
+    info "Installing uv..."
+    curl -LsSf https://astral.sh/uv/install.sh | sh
+    # Make uv available in the current shell session
+    export PATH="$HOME/.local/bin:$PATH"
+else
+    info "uv is already installed ($(uv --version))."
+fi
+
+# ── 4. Create venv and install Python dependencies ────────────────────────────
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+VENV_DIR="$SCRIPT_DIR/.venv"
+
+info "Creating virtual environment at $VENV_DIR with system-site-packages..."
+# --system-site-packages lets the venv see picamera2 installed as a system package
+uv venv --system-site-packages "$VENV_DIR"
+
+info "Installing Tele Imager Python dependencies (Raspberry Pi extras)..."
+if ! uv pip install --python "$VENV_DIR" -e "$SCRIPT_DIR[raspi]"; then
+    error "Failed to install Python dependencies. Check the output above for details."
+    error "You can retry manually: uv pip install --python $VENV_DIR -e '$SCRIPT_DIR[raspi]'"
+    exit 1
+fi
+
+# ── 5. Python package installation reminder ───────────────────────────────────
 echo ""
-info "System packages installed successfully."
+info "System packages and Python dependencies installed successfully."
 echo ""
 echo "========================================================================"
 echo "  Next steps:"
@@ -87,17 +114,14 @@ echo "       camera_auto_detect=1"
 echo "       # or for a specific sensor, e.g. IMX708 (Camera Module 3):"
 echo "       # dtoverlay=imx708"
 echo ""
-echo "  2. Install Tele Imager Python dependencies (Raspberry Pi extras):"
+echo "  2. A uv virtual environment has been created at .venv."
+echo "     Activate it before running any teleimager commands:"
 echo ""
-echo "       pip install -e \".[raspi]\""
+echo "       source .venv/bin/activate"
 echo ""
-echo "     Note: picamera2 is already provided as a system package above."
-echo "     If you prefer a venv-based install add '--system-site-packages'"
-echo "     when creating the environment so picamera2 is visible inside it:"
+echo "     To reinstall or update dependencies manually:"
 echo ""
-echo "       python3 -m venv --system-site-packages venv"
-echo "       source venv/bin/activate"
-echo "       pip install -e \".[raspi]\""
+echo "       uv pip install -e \".[raspi]\""
 echo ""
 echo "  3. Discover your camera:"
 echo ""
