@@ -70,10 +70,8 @@ fi
 
 # ── 3. Install uv ─────────────────────────────────────────────────────────────
 if ! command -v uv &>/dev/null; then
-    info "Installing uv..."
-    curl -LsSf https://astral.sh/uv/install.sh | sh
-    # Make uv available in the current shell session
-    export PATH="$HOME/.local/bin:$PATH"
+    info "Installing uv system-wide to /usr/local/bin..."
+    curl -LsSf https://astral.sh/uv/install.sh | sudo UV_INSTALL_DIR=/usr/local/bin sh
 else
     info "uv is already installed ($(uv --version))."
 fi
