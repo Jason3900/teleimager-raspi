@@ -89,6 +89,21 @@ bash setup_uvc.sh
 
    If neither method is used, Tele Imager will look for certificates in the default module paths.
 
+   **Method 4: Auto-generate a self-signed certificate**
+
+   If you don't have certificates from [televuer](https://github.com/unitreerobotics/televuer), you can generate a self-signed certificate for testing:
+
+   ```bash
+   mkdir -p ~/.config/xr_teleoperate/
+   openssl req -x509 -newkey rsa:4096 \
+     -keyout ~/.config/xr_teleoperate/key.pem \
+     -out ~/.config/xr_teleoperate/cert.pem \
+     -days 365 -nodes \
+     -subj "/CN=localhost"
+   ```
+
+   > **Note:** Browsers will show a security warning for self-signed certificates. For production use, obtain certificates from [televuer](https://github.com/unitreerobotics/televuer).
+
 
 
 ### 1.2 🔍 Discover Connected Cameras

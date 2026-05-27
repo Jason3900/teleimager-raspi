@@ -97,6 +97,21 @@ bash setup_uvc.sh
    方法 3：默认行为
     若不配置，Tele Imager 会从默认模块路径查找证书。
 
+   方法 4：自动生成自签名证书
+
+   如果您没有来自 [televuer](https://github.com/unitreerobotics/televuer) 的证书，可以使用以下命令生成自签名证书用于测试：
+
+   ```bash
+   mkdir -p ~/.config/xr_teleoperate/
+   openssl req -x509 -newkey rsa:4096 \
+     -keyout ~/.config/xr_teleoperate/key.pem \
+     -out ~/.config/xr_teleoperate/cert.pem \
+     -days 365 -nodes \
+     -subj "/CN=localhost"
+   ```
+
+   > **注意：** 浏览器会对自签名证书显示安全警告。正式使用时，请通过 [televuer](https://github.com/unitreerobotics/televuer) 获取证书。
+
 
 
 ### 1.2 🔍 查找已连接的摄像头
