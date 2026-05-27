@@ -1274,6 +1274,7 @@ class PiCamera2Camera(BaseCamera):
                     main={"size": (img_shape[1], img_shape[0])},
                     controls={"FrameRate": float(fps)},
                 )
+                self._picam2.align_configuration(config)
                 self._picam2.configure(config)
                 self._picam2.start_recording(self._mjpeg_encoder, self._mjpeg_output)
             else:
@@ -1282,6 +1283,7 @@ class PiCamera2Camera(BaseCamera):
                     main={"size": (img_shape[1], img_shape[0]), "format": "BGR888"},
                     controls={"FrameRate": float(fps)},
                 )
+                self._picam2.align_configuration(config)
                 self._picam2.configure(config)
                 self._picam2.start()
 
