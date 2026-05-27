@@ -1,0 +1,56 @@
+# =====================================================
+# Raspberry Pi 5 camera configuration
+# =====================================================
+# Single Pi Camera Module (head camera)
+head_camera:
+  # if enable_zmq and enable_webrtc are both false, the camera will not start
+  # Set to true to enable ZMQ publishing, false to disable
+  enable_zmq: true
+  # Port to publish camera stream via ZMQ PUB-SUB.  image_client.py connects to the same port.
+  zmq_port: 55555
+  # Set to true to enable WebRTC publishing, false to disable
+  enable_webrtc: true
+  # Port for WebRTC signaling server
+  webrtc_port: 60001
+  # webrtc codec preference, options: "vp8", "h264"
+  webrtc_codec: h264
+
+  # Camera type: "picamera2" uses the Raspberry Pi Camera Module via libcamera
+  type: picamera2
+
+  # Index of the Pi Camera Module (0 for the first camera, 1 for a second camera)
+  camera_num: 0
+
+  # Image Format
+  # image resolution: [height, width]
+  image_shape: [480, 640]
+  binocular: false
+  # frame per second
+  fps: 30
+
+  # The following identifiers are not used for picamera2 cameras.
+  # Leave them as null.
+  video_id: null
+  serial_number: null
+  physical_path: null
+
+# =====================================================
+# Additional Pi Camera Modules (optional)
+# =====================================================
+# Uncomment and configure the block below to add a second Pi Camera Module.
+# Requires a Raspberry Pi with two camera connectors (e.g. RPi 5 or CM4).
+#
+# second_camera:
+#   enable_zmq: true
+#   zmq_port: 55556
+#   enable_webrtc: true
+#   webrtc_port: 60002
+#   webrtc_codec: h264
+#   type: picamera2
+#   camera_num: 1
+#   image_shape: [480, 640]
+#   binocular: false
+#   fps: 30
+#   video_id: null
+#   serial_number: null
+#   physical_path: null

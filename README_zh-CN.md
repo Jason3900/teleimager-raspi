@@ -407,7 +407,83 @@ bash setup_autostart.sh
     sudo $(which teleimager-server) --cf
     ```
 
-## 6. 🙏 Acknowledgement
+## 6. 🍓 树莓派 5 支持（Raspberry Pi 5）
+
+Tele Imager 通过 `picamera2` / `libcamera` 支持 **Raspberry Pi 5** 与 Pi 摄像头模组（Camera Module 3、HQ Camera 等）。
+
+### 6.1 📥 环境配置（RPi 5）
+
+1. 运行 RPi 5 安装脚本以安装系统级依赖：
+
+   ```bash
+   bash setup_raspi.sh
+   ```
+
+   该脚本将安装 `python3-picamera2`、`libcamera-dev`、`libturbojpeg-dev` 并配置 udev 规则。
+
+2. 在 `raspi-config` 中启用摄像头接口（若尚未启用）：
+
+   ```bash
+   sudo raspi-config
+   # 导航至：Interface Options → Camera → Enable
+   # 启用后重启。
+   ```
+
+3. 安装 Tele Imager 的树莓派额外依赖：
+
+   ```bash
+   pip install -e ".[raspi]"
+   ```
+
+   > 注意：`picamera2` 最好通过系统包 `python3-picamera2` 安装。如果您使用 `venv`，请使用 `--system-site-packages` 创建环境，使 picamera2 在虚拟环境中可见：
+   > ```bash
+   > python3 -m venv --system-site-packages venv && source venv/bin/activate
+   > pip install -e ".[raspi]"
+   > ```
+
+### 6.2 🔍 发现已连接的 Pi 摄像头
+
+```bash
+python -c "from picamera2 import Picamera2; print(Picamera2.global_camera_info())"
+```
+
+### 6.3 📡 在 RPi 5 上启动图像服务器
+
+1. 编辑 `cam_config_raspi.yaml`，根据您的摄像头配置调整分辨率、帧率和端口等参数。
+
+2. 启动服务器：
+
+   ```bash
+   teleimager-server --raspi
+   # 或指定自定义配置文件：
+   teleimager-server --config cam_config_raspi.yaml
+   ```
+
+### 6.4 🖥️ 从客户端连接
+
+在同一网络的任意机器上：
+
+```bash
+teleimager-client --host <树莓派IP>
+# 例如，通过树莓派热点连接：
+teleimager-client --host 192.168.4.1
+```
+
+### 6.5 ⚡ H264 硬件编码
+
+在 RPi 5 上，Tele Imager 会自动检测并使用 **`h264_v4l2m2m`** V4L2 硬件编码器用于 WebRTC 推流，性能优于软件编码的 `libx264`。如果硬件编码器不可用，将自动回退至 `libx264`。
+
+### 6.6 📝 与 Jetson 的主要区别
+
+| 功能 | Jetson (Orin NX) | Raspberry Pi 5 |
+|---|---|---|
+| 摄像头驱动 | UVC / OpenCV / RealSense | `picamera2`（libcamera） |
+| 安装命令 | `pip install -e ".[server]"` | `pip install -e ".[raspi]"` |
+| H264 编码器 | libx264（软件） | h264_v4l2m2m（硬件）/ libx264 |
+| 配置文件 | `cam_config_server.yaml` | `cam_config_raspi.yaml` |
+| 启动参数 | *（默认）* | `--raspi` |
+
+## 7. 🙏 Acknowledgement
 
 
 
