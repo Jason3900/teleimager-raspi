@@ -62,6 +62,34 @@ else
     info "udev rule already exists in $UDEV_FILE – skipping."
 fi
 
+# USB-level udev rule required by pupil-labs-uvc (libuvc) to open UVC devices
+# without root. This is safe to add even when no USB camera is present.
+USB_UDEV_RULE='SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", GROUP="video", MODE="0664"'
+USB_UDEV_FILE="/etc/udev/rules.d/10-libuvc.rules"
+
+if ! grep -qF 'MODE="0664"' "$USB_UDEV_FILE" 2>/dev/null; then
+    echo "$USB_UDEV_RULE" | sudo tee "$USB_UDEV_FILE" > /dev/null
+    sudo udevadm control --reload-rules
+    sudo udevadm trigger
+    info "USB udev rule written to $USB_UDEV_FILE"
+else
+    info "USB udev rule already exists in $USB_UDEV_FILE – skipping."
+fi
+
+# Grant passwordless sudo for reloading the uvcvideo kernel module.
+# ImageServer calls `sudo modprobe -r uvcvideo` / `sudo modprobe uvcvideo`
+# to reset the driver before opening UVC cameras.
+MODPROBE_PATH="$(which modprobe)"
+SUDOERS_UVC="/etc/sudoers.d/uvc_modprobe"
+if [[ ! -f "$SUDOERS_UVC" ]]; then
+    echo "%video ALL=(ALL) NOPASSWD: $MODPROBE_PATH -r uvcvideo, $MODPROBE_PATH uvcvideo debug=*" \
+        | sudo tee "$SUDOERS_UVC" > /dev/null
+    sudo chmod 0440 "$SUDOERS_UVC"
+    info "Passwordless modprobe rule written to $SUDOERS_UVC"
+else
+    info "Passwordless modprobe rule already exists in $SUDOERS_UVC – skipping."
+fi
+
 # Add the current user to the 'video' group so the udev rule takes effect
 if ! groups "$USER" | grep -q '\bvideo\b'; then
     sudo usermod -aG video "$USER"

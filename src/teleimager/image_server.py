@@ -1486,6 +1486,15 @@ class ImageServer:
                         # ——— even if no camera matches the given path/serial.
                         continue
 
+                    # Fall back to video_id when neither physical_path nor serial_number is set
+                    uid = self._cam_finder.get_uid_by_vpath(video_path)
+                    if uid is None:
+                        self._cameras[cam_topic] = None
+                        logger_mp.error(f"[Image Server] Cannot find UVCCamera for {cam_topic} with video_id {video_id}")
+                    else:
+                        self._cameras[cam_topic] = UVCCamera(cam_topic, uid, img_shape, fps,
+                                                             enable_zmq, zmq_port, enable_webrtc, webrtc_port, webrtc_codec)
+
                 elif cam_type == "picamera2":
                     camera_num = int(cam_cfg.get("camera_num", 0))
                     self._cameras[cam_topic] = PiCamera2Camera(
@@ -1715,7 +1724,9 @@ def main():
         "\n"
         "Note:\n"
         " - If you have RealSense cameras, add the '--rs' flag to enable RealSense support.\n"
-        " - For Raspberry Pi 5 with Pi Camera Module, use '--raspi' or '--config cam_config_raspi.yaml'.\n"
+        " - For Raspberry Pi 5, use '--raspi' or '--config cam_config_raspi.yaml'.\n"
+        "   cam_config_raspi.yaml supports both picamera2 (Pi Camera Module) and uvc (USB UVC) camera types.\n"
+        "   See the commented-out UVC example in cam_config_raspi.yaml for details.\n"
         " - Make sure you have proper permissions to access the camera devices (e.g., run with sudo or set udev rules).\n"
         "=========================================================================="
     )
