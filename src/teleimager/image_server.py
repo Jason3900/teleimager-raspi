@@ -1388,7 +1388,6 @@ class ImageServer:
         _needs_cam_finder = any(
             cam_cfg.get("type", "uvc").lower() in ("opencv", "uvc", "realsense")
             for cam_cfg in cam_config.values()
-            if cam_cfg.get("enable_zmq", False) or cam_cfg.get("enable_webrtc", False)
         )
         if not self._isaacsim_enable and _needs_cam_finder:
             self._cam_finder = CameraFinder(realsense_enable, camera_finder_verbose)
