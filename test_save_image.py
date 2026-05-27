@@ -3,14 +3,14 @@ Test script: connect to an image server using ImageClient, capture the current
 frame from every ZMQ-enabled camera, and save each one as a PNG file.
 
 Usage:
-    python test_save_image.py [--host HOST] [--output-dir OUTPUT_DIR] [--timeout TIMEOUT]
+    python test_save_image.py [--host HOST] [--port PORT] [--output-dir OUTPUT_DIR] [--timeout TIMEOUT]
 
 Examples:
     # Save images from the default robot IP
     python test_save_image.py
 
-    # Save images from a custom host into a specific directory
-    python test_save_image.py --host 192.168.4.1 --output-dir /tmp/captures
+    # Save images from a custom host and port into a specific directory
+    python test_save_image.py --host 192.168.4.1 --port 60002 --output-dir /tmp/captures
 """
 
 import argparse
@@ -60,6 +60,12 @@ def main():
         help="IP address of the image server (default: 192.168.123.164)",
     )
     parser.add_argument(
+        "--port",
+        type=int,
+        default=60000,
+        help="TCP port for camera configuration request (default: 60000)",
+    )
+    parser.add_argument(
         "--output-dir",
         type=str,
         default=".",
@@ -76,7 +82,7 @@ def main():
     os.makedirs(args.output_dir, exist_ok=True)
 
     print(f"Connecting to image server at {args.host} …")
-    client = ImageClient(host=args.host, request_bgr=True)
+    client = ImageClient(host=args.host, request_port=args.port, request_bgr=True)
     cam_config = client.get_cam_config()
     print(f"Camera config received. Available cameras: {list(cam_config.keys())}\n")
 

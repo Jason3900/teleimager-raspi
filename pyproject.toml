@@ -16,6 +16,8 @@ dependencies = [
     "pyzmq",
 ]
 [project.optional-dependencies]
+# execute pip install -e ".[client]" to install client-only dependencies
+client = []
 # execute pip install -e ".[server]" to install server dependencies
 server = [
     "aiohttp",
