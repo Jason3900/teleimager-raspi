@@ -70,10 +70,8 @@ fi
 
 # ── 3. Install uv ─────────────────────────────────────────────────────────────
 if ! command -v uv &>/dev/null; then
-    info "Installing uv..."
-    curl -LsSf https://astral.sh/uv/install.sh | sh
-    # Make uv available in the current shell session
-    export PATH="$HOME/.local/bin:$PATH"
+    info "Installing uv system-wide to /usr/local/bin..."
+    curl -LsSf https://astral.sh/uv/install.sh | sudo UV_INSTALL_DIR=/usr/local/bin sh
 else
     info "uv is already installed ($(uv --version))."
 fi
@@ -83,8 +81,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VENV_DIR="$SCRIPT_DIR/.venv"
 
 info "Creating virtual environment at $VENV_DIR with system-site-packages..."
-# --system-site-packages lets the venv see picamera2 installed as a system package
-uv venv --system-site-packages "$VENV_DIR"
+# --python python3 pins the venv to the system interpreter so that system-installed
+# packages such as picamera2 (installed via apt) are visible through --system-site-packages
+uv venv --python python3 --system-site-packages "$VENV_DIR"
 
 info "Installing Tele Imager Python dependencies (Raspberry Pi extras)..."
 if ! uv pip install --python "$VENV_DIR" -e "$SCRIPT_DIR[raspi]"; then
