@@ -45,7 +45,7 @@ head_camera:
   fps: 30
 
   # The following identifiers (video_id, serial_number, physical_path) are used
-  # only for uvc/opencv camera types.  Leave them as null for picamera2 cameras.
+  # only for uvc/opencv camera types (not picamera2).  Leave them as null here.
   video_id: null
   serial_number: null
   physical_path: null

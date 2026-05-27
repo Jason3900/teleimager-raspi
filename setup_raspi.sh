@@ -82,7 +82,7 @@ fi
 MODPROBE_PATH="$(which modprobe)"
 SUDOERS_UVC="/etc/sudoers.d/uvc_modprobe"
 if [[ ! -f "$SUDOERS_UVC" ]]; then
-    echo "ALL ALL=(ALL) NOPASSWD: $MODPROBE_PATH -r uvcvideo, $MODPROBE_PATH uvcvideo debug=*" \
+    echo "%video ALL=(ALL) NOPASSWD: $MODPROBE_PATH -r uvcvideo, $MODPROBE_PATH uvcvideo debug=*" \
         | sudo tee "$SUDOERS_UVC" > /dev/null
     sudo chmod 0440 "$SUDOERS_UVC"
     info "Passwordless modprobe rule written to $SUDOERS_UVC"
