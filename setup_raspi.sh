@@ -48,6 +48,12 @@ sudo apt-get install -y \
 info "Installing libturbojpeg for fast JPEG encoding..."
 sudo apt-get install -y libturbojpeg-dev
 
+# Install numpy and opencv via apt so the venv can use the same builds that
+# picamera2 was compiled against.  Installing these from PyPI installs
+# different builds whose native extensions conflict with libcamera at runtime.
+info "Installing python3-numpy and python3-opencv via apt..."
+sudo apt-get install -y python3-numpy python3-opencv
+
 # ── 2. optional: udev rules for USB UVC cameras ───────────────────────────────
 info "Adding udev rules for USB video devices (allows non-root access)..."
 UDEV_RULE='SUBSYSTEM=="video4linux", KERNEL=="video[0-9]*", GROUP="video", MODE="0660"'
@@ -119,6 +125,14 @@ if ! uv pip install --python "$VENV_DIR" -e "$SCRIPT_DIR[raspi]"; then
     error "You can retry manually: uv pip install --python $VENV_DIR -e '$SCRIPT_DIR[raspi]'"
     exit 1
 fi
+
+# Remove pip-installed numpy and opencv-python from the venv.
+# These packages bundle native extensions that conflict with the libcamera
+# shared libraries at runtime.  The system apt versions (python3-numpy,
+# python3-opencv) are exposed via --system-site-packages and are fully
+# compatible with picamera2.
+info "Removing conflicting pip packages from venv (using system apt versions instead)..."
+uv pip uninstall --python "$VENV_DIR" numpy opencv-python 2>/dev/null || true
 
 # ── 5. Python package installation reminder ───────────────────────────────────
 echo ""
